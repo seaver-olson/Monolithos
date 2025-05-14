@@ -2,16 +2,19 @@
 EXTENDS Integers, Sequences, TLC, FiniteSets
 
 
-VARIABLES ioQueue, ioQueueSize,  currentTime, wRemaining
+VARIABLES ioQueue, ioQueueSize,  currentTime, wRemaining, missedTotal
 
 CONSTANT maxQueueSize, windowSize
 
+(* contains only necessary arguments and not full IOECB info *)
 IOECB ==
     [ wcet       : Nat,
       deadline   : Nat,
       priority   : Nat,
       completed  : BOOLEAN,
-      submittedAt: Nat ]
+      submittedAt: Nat,
+      missed : BOOLEAN (* added to check for missed deadlines, should have 0 missed *)
+      ]
 
 
 Init ==
@@ -19,6 +22,7 @@ Init ==
     /\ wRemaining = windowSize
     /\ ioQueueSize = 0
     /\ currentTime = 0
+    /\ missedTotal = 0
  
 Tick ==
     /\ currentTime' = currentTime + 1
@@ -30,52 +34,61 @@ Tick ==
     
 DeterministicExecution ==
     \A i \in 1..Len(ioQueue) :
-        LET e == ioQueue[i] IN
-            (e \in [ wcet       : Nat,
+        LET task == ioQueue[i] IN
+            (task \in [ wcet       : Nat,
                      deadline   : Nat,
                      priority   : Nat,
                      completed  : BOOLEAN,
-                     submittedAt: Nat ]) 
+                     submittedAt: Nat,
+                     missed : BOOLEAN]) 
             =>
-            (e.completed =>
-                /\ e.wcet <= windowSize
-                /\ e.deadline >= e.submittedAt)
+            (task.completed =>
+                /\ task.wcet <= windowSize
+                /\ task.deadline >= task.submittedAt
+                /\ ~task.missed)
                
-ExecutedOnceInvariant ==
-  \A i \in 1..Len(ioQueue) :
-    LET e == ioQueue[i] IN
-      e.completed =>
-        Cardinality({
-          j \in 1..Len(ioQueue) :
-            LET ej == ioQueue[j] IN
-              <<ej.submittedAt, ej.deadline, ej.priority>> = <<e.submittedAt, e.deadline, e.priority>>
-        }) = 1
+
         
+(* IOECBs can only be serviced during IO Service Window *)
 WindowInvariant ==
   \A i \in 1..Len(ioQueue) :
     LET e == ioQueue[i] IN
       e.completed => e.wcet <= windowSize
 
+NoDeadlineMisses ==
+  missedTotal = 0
+  
 AllInvariants ==
-  WindowInvariant /\ ExecutedOnceInvariant /\ DeterministicExecution
+  WindowInvariant /\ DeterministicExecution /\ NoDeadlineMisses
          
 FilterUncompleted(seq) ==
   SelectSeq(seq, LAMBDA e: ~e.completed)
 
+
+(* 
+create empty IOECB abstracted down to basic attributes that the scheduler can handle.
+While I didn't implement any actions,
+it doesn't matter as the scheduler only needs a few of the attributes of the IOECB
+This is because this model if to model behavior and not code execution
+*)
 SubmitIOECB ==
+    (* I created a local IOECB and appended it to the queue to simulate  *)
     LET newECB ==
         [ wcet       |-> 2,
           deadline   |-> currentTime + 5,
           priority   |-> 1,
           completed  |-> FALSE,
-          submittedAt|-> currentTime ]
+          submittedAt|-> currentTime,
+          missed     |-> FALSE
+          ]
     IN
     /\ ioQueueSize < maxQueueSize
     /\ ioQueue' = Append(ioQueue, newECB)
     /\ ioQueueSize' = ioQueueSize + 1
     /\ UNCHANGED <<currentTime, wRemaining>>
 
-(* Retrieves the Best IOECB currently in queue during Service Window *)
+
+(* Retrieves the index of the best task for ExecuteIOECB *)
 RetrieveIOECB ==
     CHOOSE i \in 1..Len(ioQueue):
         LET task == ioQueue[i] IN
@@ -97,16 +110,23 @@ ExecuteIOECB ==
     LET i == RetrieveIOECB IN
     LET task == ioQueue[i] IN
     LET ioQueueTemp == [j \in 1..Len(ioQueue) |->
-                          IF j = i THEN [task EXCEPT !.completed = TRUE] ELSE ioQueue[j]] IN
+      IF j = i THEN 
+        [task EXCEPT 
+          !.completed = TRUE,
+          !.missed = currentTime + task.wcet > task.deadline] (* hopefully doesn't ever become true *)
+      ELSE ioQueue[j]
+    ] IN
+    (* Had to create a new updatedTask var as task.missed would not be set to it's true value in the main list at this point *)
+    LET updatedTask == ioQueueTemp[i] IN
     (
       /\ ioQueue' = FilterUncompleted(ioQueueTemp)
       /\ ioQueueSize' = Len(ioQueue')
       /\ wRemaining' = wRemaining - task.wcet
+      /\ missedTotal' = missedTotal + IF updatedTask.missed THEN 1 ELSE 0
       /\ UNCHANGED <<currentTime>>
     )
   ELSE
-    UNCHANGED << ioQueue, ioQueueSize, wRemaining, currentTime >>
-    
+    UNCHANGED << ioQueue, ioQueueSize, wRemaining, currentTime, missedTotal >>
 
 
 Next ==
@@ -116,7 +136,8 @@ Next ==
     
 
     
-Spec == Init /\ [][Next]_<<ioQueue, ioQueueSize, currentTime, wRemaining>>
+Spec == Init /\ [][Next]_<<ioQueue, ioQueueSize, currentTime, wRemaining, missedTotal>>
+
 
 
 
