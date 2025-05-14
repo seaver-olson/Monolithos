@@ -136,7 +136,6 @@ ExecuteIOECB ==
           !.missed = currentTime + task.wcet > task.deadline] (* hopefully doesn't ever become true *)
       ELSE ioQueue[j]
     ] IN
-    (* Had to create a new updatedTask var as task.missed would not be set to it's true value in the main list at this point *)
     (
         /\ ioQueue' = SelectSeq(ioQueueTemp, LAMBDA e: ~e.completed)
         /\ ioQueueSize' = Len(ioQueue')
