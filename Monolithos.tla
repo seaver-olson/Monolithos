@@ -22,8 +22,9 @@ Init ==
     /\ wRemaining = windowSize
     /\ ioQueueSize = 0
     /\ currentTime = 0
-    /\ missedTotal = 0
+    /\ missedTotal = 0 (* if this changes model fails *)
  
+(* used to increment time sim as well as update Service Window size *)
 Tick ==
     /\ currentTime' = currentTime + 1
     /\ wRemaining' =
@@ -55,14 +56,15 @@ WindowInvariant ==
     LET e == ioQueue[i] IN
       e.completed => e.wcet <= windowSize
 
+(* didn't want to make a whole invariant for this but it makes it easier to see when it fails *)
 NoDeadlineMisses ==
   missedTotal = 0
   
+(* Only used during initial testing 
 AllInvariants ==
   WindowInvariant /\ DeterministicExecution /\ NoDeadlineMisses
-         
-FilterUncompleted(seq) ==
-  SelectSeq(seq, LAMBDA e: ~e.completed)
+*)       
+
 
 
 (* 
@@ -117,13 +119,12 @@ ExecuteIOECB ==
       ELSE ioQueue[j]
     ] IN
     (* Had to create a new updatedTask var as task.missed would not be set to it's true value in the main list at this point *)
-    LET updatedTask == ioQueueTemp[i] IN
     (
-      /\ ioQueue' = FilterUncompleted(ioQueueTemp)
-      /\ ioQueueSize' = Len(ioQueue')
-      /\ wRemaining' = wRemaining - task.wcet
-      /\ missedTotal' = missedTotal + IF updatedTask.missed THEN 1 ELSE 0
-      /\ UNCHANGED <<currentTime>>
+        /\ ioQueue' = SelectSeq(ioQueueTemp, LAMBDA e: ~e.completed)
+        /\ ioQueueSize' = Len(ioQueue')
+        /\ wRemaining' = wRemaining - task.wcet
+        /\ missedTotal' = missedTotal + IF ioQueueTemp[i].missed THEN 1 ELSE 0
+        /\ UNCHANGED <<currentTime>>
     )
   ELSE
     UNCHANGED << ioQueue, ioQueueSize, wRemaining, currentTime, missedTotal >>
