@@ -1,8 +1,17 @@
+(* Problems for future work: 
+    Current model does not check for IOECBs that can stay idle inside the queue and thus expire and miss their deadline
+            (I will later add a misses sweeping function to solve this)
+            (this will probably require a clean sweeping function as well)
+    wcet is consumed at execution which means the model can not model parital-completion
+    I will also eventually randomize the the submission process for better load testing
+    
+*)
+
 ----------------------------- MODULE Monolithos -----------------------------
 EXTENDS Integers, Sequences, TLC, FiniteSets
 
 
-VARIABLES ioQueue, ioQueueSize,  currentTime, wRemaining, missedTotal
+VARIABLES ioQueue, ioQueueSize,  currentTime, wRemaining, missedTotal, executedTotal
 
 CONSTANT maxQueueSize, windowSize
 
@@ -23,6 +32,7 @@ Init ==
     /\ ioQueueSize = 0
     /\ currentTime = 0
     /\ missedTotal = 0 (* if this changes model fails *)
+    /\ executedTotal = 0
  
 (* used to increment time sim as well as update Service Window size *)
 Tick ==
@@ -31,7 +41,7 @@ Tick ==
         IF wRemaining = 0
         THEN windowSize
         ELSE wRemaining - 1
-    /\ UNCHANGED << ioQueue, ioQueueSize>>
+    /\ UNCHANGED << ioQueue, ioQueueSize, missedTotal, executedTotal>>
     
 DeterministicExecution ==
     \A i \in 1..Len(ioQueue) :
@@ -87,28 +97,36 @@ SubmitIOECB ==
     /\ ioQueueSize < maxQueueSize
     /\ ioQueue' = Append(ioQueue, newECB)
     /\ ioQueueSize' = ioQueueSize + 1
-    /\ UNCHANGED <<currentTime, wRemaining>>
+    (*/\ currentTime % 2 = 0  submission of IOECBs was overpowering execution of them this cuts the submissions in half*)
+    /\ UNCHANGED <<currentTime, wRemaining, missedTotal, executedTotal>>
+
+ValidTasks ==
+  { i \in 1..Len(ioQueue) :
+      LET task == ioQueue[i] IN
+        /\ ~task.completed
+        /\ task.wcet <= wRemaining
+        /\ currentTime + task.wcet <= task.deadline
+}
+(* I had to add this O(n^2) function here to fix the RetrieveIOECB error when CHOOSE from the indicies list trys to scan an empty list *)
+BestTasks ==
+  { i \in ValidTasks :
+      LET task == ioQueue[i] IN
+        \A j \in ValidTasks :
+          LET oTask == ioQueue[j] IN
+            (task.priority < oTask.priority \/
+             (task.priority = oTask.priority /\ task.deadline < oTask.deadline) \/
+             (task.priority = oTask.priority /\ task.deadline = oTask.deadline /\ task.submittedAt <= oTask.submittedAt)) }
 
 
 (* Retrieves the index of the best task for ExecuteIOECB *)
 RetrieveIOECB ==
-    CHOOSE i \in 1..Len(ioQueue):
-        LET task == ioQueue[i] IN
-            /\ ~task.completed
-            /\ task.wcet <= wRemaining
-            /\ \A j \in 1..Len(ioQueue) :
-                LET oTask == ioQueue[j] IN
-                    (~oTask.completed /\ oTask.wcet <= wRemaining) =>
-                        (task.priority < oTask.priority \/
-                        (task.priority = oTask.priority /\ task.deadline < oTask.deadline) \/
-                        (task.priority = oTask.priority /\ task.deadline = oTask.deadline /\ task.submittedAt <= oTask.submittedAt))
-            
+  IF BestTasks # {} THEN
+    CHOOSE i \in BestTasks : TRUE
+  ELSE 0
+  
+  
 ExecuteIOECB ==
-  IF \E i \in 1..Len(ioQueue) :
-       LET e == ioQueue[i] IN
-         /\ ~e.completed
-         /\ e.wcet <= wRemaining
-  THEN
+   IF ValidTasks # {} THEN
     LET i == RetrieveIOECB IN
     LET task == ioQueue[i] IN
     LET ioQueueTemp == [j \in 1..Len(ioQueue) |->
@@ -124,10 +142,12 @@ ExecuteIOECB ==
         /\ ioQueueSize' = Len(ioQueue')
         /\ wRemaining' = wRemaining - task.wcet
         /\ missedTotal' = missedTotal + IF ioQueueTemp[i].missed THEN 1 ELSE 0
+        /\ executedTotal' = executedTotal + 1
         /\ UNCHANGED <<currentTime>>
     )
+    
   ELSE
-    UNCHANGED << ioQueue, ioQueueSize, wRemaining, currentTime, missedTotal >>
+    UNCHANGED << ioQueue, ioQueueSize, wRemaining, currentTime, missedTotal, executedTotal >>
 
 
 Next ==
@@ -137,7 +157,7 @@ Next ==
     
 
     
-Spec == Init /\ [][Next]_<<ioQueue, ioQueueSize, currentTime, wRemaining, missedTotal>>
+Spec == Init /\ [][Next]_<<ioQueue, ioQueueSize, currentTime, wRemaining, missedTotal, executedTotal>>
 
 
 
